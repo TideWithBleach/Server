@@ -1,0 +1,368 @@
+# This script was tested on AX-750 with Mellanox ConnectX-6 Dx Adapters. 4 NICs in Fully Converged Switch Embedded Team.  
+# RDMA and Registry Settings will vary with different NICs models.
+# This is not intended to replace Solve documentation, please always reference Solve for current deployment procedures.
+
+##########################################################################
+######     Configure Each Host with IP and install Roles  ################
+##########################################################################
+# Repeat the below for each host
+# Login to the host console of each system using iDRAC Virtual Console and assign host IPs and respective VLANs Disable the DHCP on the management adapters
+
+Get-NetAdapter | sort Name
+Set-NetIPInterface -InterfaceAlias 'Integrated NIC 1 Port 1-1' , 'Integrated NIC 1 Port 2-1' -dhcp Disabled
+
+#If all Network Connections are cabled you can disable disconnected network adapters (repeat for each host)
+
+Get-NetAdapter | Where-Object {$_.status -eq "disconnected"} | Disable-NetAdapter -confirm:$false
+
+New-NetIPAddress -InterfaceAlias "Integrated NIC 1 Port 1-1" -IPAddress 172.17.10.13 -PrefixLength 24 -AddressFamily IPv4 -defaultgateway 172.17.10.1 -verbose -confirm:$false
+
+Get-NetAdapter -Name "Integrated NIC 1 Port 1-1" | Set-NetAdapter -VlanID 10 -Confirm:$false
+
+# Use sconfig to update all quality updates. Then do a feature update to the latest version. Then repeat all quality updates.
+
+# To check the operating system and latest hotfix versions, run the following commands:
+
+Get-ComputerInfo | select OSDisplayVersion,WindowsProductName,OsBuildNumber
+get-hotfix
+
+# Install Windows Features (Run this even if ASHCI is factory Installed. ASHCI Factory Imaged will likely be missing NetworkHUD)
+
+Install-WindowsFeature -Name Hyper-V, NetworkATC, NetworkHUD, FS-SMBBW, Failover-Clustering, Data-Center-Bridging, BitLocker, FS-FileServer, RSAT-Clustering-PowerShell -IncludeAllSubFeature -IncludeManagementTools -verbose
+
+# Rename and Domain Join the hosts
+Rename-Computer -NewName FS-HCL-H1
+$credential = Get-Credential
+Add-Computer -DomainName bh.local -Credential $credential -Restart
+
+##########################################################################
+
+##########################################################################
+#############   Create Cluster, Run from single host   ###################
+##########################################################################
+
+#### Customer Cluster Variables####
+
+$node="FS-HCL-H1","FS-HCL-H2","FS-HCL-H3"
+$clustername="FSCL"
+$clusterip="172.17.10.14"
+
+##########################################################################
+
+# verify disks are showing up on each node
+Invoke-Command -computername $node -scriptblock {Get-PhysicalDisk -canpool 1 | Measure-Object -Property friendlyname} | select pscomputername,property,count
+
+# Ensure all nodes are accessible via management IPs then test the cluster
+# Check all host NICs are up
+Invoke-Command -computername $node -scriptblock {Get-NetAdapter | Select Name,InterfaceDescription,Status,LinkSpeed | where InterfaceDescription -like Mellanox*} | sort pscomputername,name | ft
+
+# Check all NICs are running the same drivers. If not identical Network Intent creation will fail. Command will take some time to run.
+Invoke-Command -computername $node -scriptblock {Get-PnpDevice | Select-Object Name, @{l='DriverVersion';e={(Get-PnpDeviceProperty -InstanceId $_.InstanceId -KeyName 'DEVPKEY_Device_DriverVersion').Data}} -Unique |Where-Object {($_.Name -like "*HBA*") -or ($_.Name -like "*mellanox*") -or ($_.Name -like "*Qlogic*") -or ($_.Name -like "*X710*") -or ($_.Name -like "*Broadcom*") -or($_.Name -like "*marvell*") -or($_.Name -like "*E810*") } | sort pscomputerName} | ft
+
+# Test the cluster and create it
+Test-Cluster -Node $node -Include 'Storage Spaces Direct','Inventory', 'System Configuration' -Verbose
+
+# resolve any outstanding errors then create cluster
+
+New-Cluster -Name $clusterName -Node $node -StaticAddress $clusterip -NoStorage -Verbose
+
+# Exclude iDRAC NDIS Adapter from Cluster Networks
+invoke-command -computername $node -scriptblock {
+New-Item -Path HKLM:\system\currentcontrolset\services\clussvc\parameters
+New-ItemProperty -Path HKLM:\system\currentcontrolset\services\clussvc\parameters -Name ExcludeAdaptersByDescription -Value "Remote NDIS Compatible Device"
+}
+invoke-command -computername $node -scriptblock {Get-ItemProperty -Path HKLM:\system\currentcontrolset\services\clussvc\parameters -Name ExcludeAdaptersByDescription | Format-List ExcludeAdaptersByDescription}
+
+##########################################################################
+
+
+##########################################################################
+#########################    Non-Converged SET    ############################
+##########################################################################
+
+######### Customer Converged SET Varibles, Change NICs to match ##########
+## The Number of Storage VLANS must equal the number of Physical NICs. I.E. 4 NICs in SET 4 VLAN IDs in $storage_vlans. 
+$mgmt_compute = @('Integrated NIC 1 Port 1-1' , 'Integrated NIC 1 Port 2-1')
+$Mgmt_Vlan=10
+$storage_nics = @('SLOT 3 Port 1','SLOT 3 Port 2','SLOT 6 Port 1','SLOT 6 Port 2')
+$storage_vlans =@(711,712,711,712)
+
+
+##########################################################################
+
+# Create DCB Overrides Objects
+$QoSOverride = New-NetIntentQoSPolicyOverrides
+$QoSOverride.BandwidthPercentage_Cluster = 2
+$QoSOverride.PriorityValue8021Action_Cluster = 5
+
+#Mgmt Adapter Overrides
+$MgmtAdapterPropertyOverrides = New-NetIntentAdapterPropertyOverrides
+$MgmtAdapterPropertyOverrides.NetworkDirect = 0
+$MgmtAdapterPropertyOverrides.JumboPacket = 1514
+
+# Create Jumbo Packet Overrides
+$StorAdapterPropertyOverrides = New-NetIntentAdapterPropertyOverrides
+$StorAdapterPropertyOverrides.JumboPacket = 9014
+
+# Select RDMA Protocol
+# Intel E810 support iWARP and RoCEV2 while Mellanox support only RoCEV2.
+# iWARP = 1 RoCEv2 = 4
+$AdapterPropertyOverrides.NetworkDirectTechnology = 1
+
+# Set Storage Overrides to prevent auto-assign SMB IPs
+$StorageOverride = New-NetIntentStorageOverrides
+$StorageOverride.EnableAutomaticIPGeneration = $false
+
+# Create Management and, Compute Intent
+Add-NetIntent -Name Management_Compute -Management -Compute -AdapterName $mgmt_compute -ManagementVlan $Mgmt_Vlan -AdapterPropertyOverrides $MgmtAdapterPropertyOverrides 
+
+# Create Storage Intent or Set Storage NICs a physical
+Add-NetIntent -Name Storage -AdapterName $storage_nics -StorageVLANs $storage_vlan -QosPolicyOverrides $QoSOverride -AdapterPropertyOverrides
+$StorAdapterPropertyOverrides -StorageOverrides $Storageoverride
+
+# If you are connected through a NIC that will be a part of the Network Intent you will lose connectivity and might need to reassign the IP. 
+
+# verify Intent was created. This may take more than 10 mins
+Get-NetIntentStatus | select intentname,Host,ConfigurationStatus,ProvisioningStatus,retrycount,error,LastSuccess,LastUpdated,LastConfigApplied |ft
+
+# Add Global Net Intent Overrides
+$clusterOverride = New-NetIntentGlobalClusterOverrides
+$clusterOverride.EnableVirtualMachineMigrationPerformanceSelection = $false
+$clusterOverride.VirtualMachineMigrationPerformanceOption = "SMB"
+$clusterOverride.MaximumVirtualMachineMigrations = 2 
+Set-NetIntent -GlobalClusterOverrides $clusterOverride
+
+##########################################################################
+
+###################################################################
+########### Set Storage IPs, Must be run on each host #############
+###################################################################
+
+#Physical Storage NIC Option
+$storage1 = 'Storage1-3'
+$storage2 = 'Storage2-3'
+$storage3 = 'Storage3-1'
+$storage4 = 'Storage3-2'
+$prefix = 30
+$storage1ip = '172.16.0.10'
+$storage2ip = '172.16.0.6'
+$storage3ip = '172.16.0.22'
+$storage4ip = '172.16.0.18'
+
+rename-netadapter -Name 'SLOT 1 Port 1' -newname $storage1
+rename-netadapter -Name 'SLOT 1 Port 2' -newname $storage2
+rename-netadapter -Name 'SLOT 2 Port 1' -newname $storage3
+rename-netadapter -Name 'SLOT 2 Port 2' -newname $storage4
+
+
+New-NetIPAddress -InterfaceAlias $storage1 -IPAddress $storage1ip -PrefixLength $prefix -AddressFamily IPv4 -Verbose -confirm:$false
+New-NetIPAddress -InterfaceAlias $storage2 -IPAddress $storage2ip -PrefixLength $prefix -AddressFamily IPv4 -Verbose -confirm:$false
+New-NetIPAddress -InterfaceAlias $storage3 -IPAddress $storage3ip -PrefixLength $prefix -AddressFamily IPv4 -Verbose -confirm:$false
+New-NetIPAddress -InterfaceAlias $storage4 -IPAddress $storage4ip -PrefixLength $prefix -AddressFamily IPv4 -Verbose -confirm:$false
+
+#Display the assigned IP addresses
+Get-NetIPAddress -AddressFamily IPv4 | Select InterfaceAlias, IPAddress
+
+#Disable IPv6 on all adapters and Disable Unused Adapters
+disable-netadapterbinding -componentid ms_tcpip6 -name *
+get-netadapterbinding -componentid ms_tcpip6 -name * | select name,componentid,enabled
+
+#Disable Unused Adapters
+disable-netadapter -name 'Embedded NIC 1','Embedded NIC 2' -confirm:$false
+
+#Enable Jumbo Frames
+Set-Netadapteradvancedproperty -name Storage* -DisplayName Jumbo* -DisplayValue 9014
+
+#DCB Settings
+Get-NetAdapter -InterfaceDescription Mellanox* | Set-NetAdapterAdvancedProperty -DisplayName 'NetworkDirect Technology' -DisplayValue 'RoCEv2' -Verbose
+
+Get-NetAdapter -InterfaceDescription Mellanox* | Get-NetAdapterAdvancedProperty -DisplayName 'NetworkDirect Technology'  | ft Name,DisplayName,DisplayValue -AutoSize -Verbose
+
+Set-NetQosDcbxSetting -Willing $false
+
+
+
+############################################################################################
+
+#Storage Intent Option
+# Each NIC in the SET requires a Storage IP address.
+$dns_address = '10.15.11.59,10.15.11.60'
+$mgmt_ip_address ='10.15.15.141'
+$mgmt_prefix = '24'
+$mgmt_defgw = '10.15.15.1'
+$stor_prefix = '24'
+$stor1_ip_address = '172.20.1.13'
+$stor2_ip_address = '172.20.2.13'
+$stor3_ip_address = '172.20.1.113'
+$stor4_ip_address = '172.20.2.113'
+
+
+New-NetIPAddress -InterfaceAlias "vSMB(Converged#SLOT 3 Port 1)" -IPAddress $stor1_ip_address -PrefixLength $stor_prefix -AddressFamily IPv4 -Verbose
+New-NetIPAddress -InterfaceAlias "vSMB(Converged#SLOT 3 Port 2)" -IPAddress $stor2_ip_address -PrefixLength $stor_prefix -AddressFamily IPv4 -Verbose
+New-NetIPAddress -InterfaceAlias "vSMB(Converged#SLOT 6 Port 1)" -IPAddress $stor3_ip_address -PrefixLength $stor_prefix -AddressFamily IPv4 -Verbose
+New-NetIPAddress -InterfaceAlias "vSMB(Converged#SLOT 6 Port 2)" -IPAddress $stor4_ip_address -PrefixLength $stor_prefix -AddressFamily IPv4 -Verbose
+
+# If you lost Management Network connectivity during NetIntent configuration remove Management IP from physical NIC and assign to VMNetworkAdapter for Management
+Remove-NetIPAddress -IPAddress $mgmt_ip_address -Confirm:$false -verbose
+New-NetIPAddress -InterfaceAlias "vManagement(Converged)" -IPAddress $mgmt_ip_address -PrefixLength $mgmt_prefix -AddressFamily IPv4 -defaultgateway $mgmt_defgw -confirm:$false -verbose
+Set-DnsClientServerAddress -InterfaceAlias "vManagement(Converged)" -ServerAddresses $dns_address
+Get-NetIPAddress -InterfaceAlias "v*" | select InterfaceAlias,IPAddress | sort name
+
+
+# If you lost Management Network connectivity during NetIntent configuration remove Management IP from physical NIC and assign to VMNetworkAdapter for Management
+Remove-NetIPAddress -IPAddress $mgmt_ip_address -Confirm:$false -verbose
+New-NetIPAddress -InterfaceAlias "vManagement(Converged)" -IPAddress $mgmt_ip_address -PrefixLength $mgmt_prefix -AddressFamily IPv4 -defaultgateway $mgmt_defgw -confirm:$false -verbose
+Set-DnsClientServerAddress -InterfaceAlias "vManagement(Converged)" -ServerAddresses $dns_address
+Get-NetIPAddress -InterfaceAlias "v*" | select InterfaceAlias,IPAddress | sort name
+
+
+##########################################################################
+############     Disable IPv6 on all Network Adapters   ##################
+##########################################################################
+
+# Checks if IPv6 is enabled
+
+Invoke-Command -computername $node -scriptblock {Get-NetAdapterBinding -name * -componentid ms_tcpip6} | Where-Object -Property Enabled -eq 'False' | select pscomputername,name,displayname,enabled | sort pscomputername,displayname |ft
+
+# Disable IPv6
+
+Invoke-Command -computername $node -scriptblock {set-NetAdapterBinding -name * -componentid ms_tcpip6 -enabled:$false}
+
+##########################################################################
+############     Mellanox Net Qos Dcbx Property    #######################
+##########################################################################
+
+invoke-command -computername $node -scriptblock {Get-NetAdapter -InterfaceDescription Mellanox* | Set-NetAdapterAdvancedProperty -DisplayName 'DcbxMode' -DisplayValue 'Host In Charge'}
+
+invoke-command -computername $node -scriptblock {Get-NetAdapter -InterfaceDescription Mellanox* | get-NetAdapterAdvancedProperty -DisplayName 'DcbxMode'} | select PSComputerName,Name,DisplayValue | sort pscomputerName
+
+
+##########################################################################
+
+# Test the cluster after configuring SET
+Test-Cluster -Node $node -Include 'Storage Spaces Direct','Inventory', 'network','System Configuration'
+
+##########################################################################
+############      Enable Storage Spaces Direct     #######################
+##########################################################################
+
+############         Customer Variables         ##########################
+
+$poolname='CHPOOL'
+
+##########################################################################
+
+Enable-ClusterStorageSpacesDirect -PoolFriendlyName $poolname -Verbose
+
+##########################################################################
+############     Updating the page file settings     #####################
+##########################################################################
+
+#On Windows Server 2022 and Azure Stack HCI operating system version 22H2, the default block cache size is 1GB.
+#Determine the Block Size with this command 
+
+(Get-Cluster).BlockCacheSize
+
+# Output should >= 51200
+
+##########################################################################
+# Run this script to update the page file settings
+# Copy the below to notepad and save as .ps1
+# Then run the file
+# Can run it on all nodes by using Invoke-Command -ComputerName $node -FilePath "<Pathto.ps1>"
+
+
+$blockCacheMB = (Get-Cluster).BlockCacheSize
+$pageFilePath = "C:\pagefile.sys"
+$initialSize = [Math]::Round(51200 + $blockCacheMB)
+$maximumSize = [Math]::Round(51200 + $blockCacheMB)
+$system = Get-WmiObject -Class Win32_ComputerSystem -EnableAllPrivileges
+
+if ($system.AutomaticManagedPagefile) 
+{
+	$system.AutomaticManagedPagefile = $false
+	$system.Put()
+}
+$currentPageFile = Get-WmiObject -Class Win32_PageFileSetting
+if ($currentPageFile.Name -eq $pageFilePath)
+{
+	$currentPageFile.InitialSize = $InitialSize
+	$currentPageFile.MaximumSize = $MaximumSize
+	$currentPageFile.Put()
+}
+else
+{
+	$currentPageFile.Delete()
+	Set-WmiInstance -Class Win32_PageFileSetting -Arguments @{Name=$pageFilePath;InitialSize = $initialSize; MaximumSize = $maximumSize}
+}
+
+##########################################################################
+
+##########################################################################
+#######################   Volume Creation   ##############################
+##########################################################################
+
+# Multiple Volumes
+
+$volname = @('Volume 1','Volume 2','Volume 3')
+foreach ($v in $volname) {
+New-Volume -ResiliencySettingName Mirror -NumberOfDataCopies 3 -FileSystem CSVFS_ReFS -StoragePoolFriendlyName $poolname -Size 4TB -FriendlyName $v
+}
+
+# Single Volume
+
+New-Volume -ResiliencySettingName Mirror -NumberOfDataCopies 3 -FileSystem CSVFS_ReFS -StoragePoolFriendlyName $poolname -Size 4TB -FriendlyName Volume 1
+
+##########################################################################
+
+##########################################################################
+####################     Registry Changes     ############################
+##########################################################################
+
+# Update SpacePort Timeout
+
+invoke-command -computername $node -scriptblock {Set-ItemProperty -Path HKLM:\SYSTEM\CurrentControlSet\Services\spaceport\Parameters -Name HwTimeout -Value 0x00002710 -Verbose} | select pscomputerName,hwtimeout | sort pscomputerName
+
+invoke-command -computername $node -scriptblock {get-ItemProperty -Path HKLM:\SYSTEM\CurrentControlSet\Services\spaceport\Parameters -Name HwTimeout}| select pscomputerName,hwtimeout | sort pscomputerName
+
+# Enable HECI and System Guard   
+
+invoke-command -computername $node -scriptblock {reg add "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" /v "Enabled" /t REG_DWORD /d 1 /f}
+invoke-command -computername $node -scriptblock {reg add "HKLM\System\CurrentControlSet\Control\DeviceGuard\Scenarios\SystemGuard" /v "Enabled" /t REG_DWORD /d 1 /f}
+
+# Reboot each node for changes to take affect
+
+##########################################################################
+
+
+##########################################################################
+############    Run SDDC Collection from PowerShell   ####################
+##########################################################################
+# Update URLS if necessary from https://github.com/DellProSupportGse/Tools
+# $add1 = SDDC package $add2 = SDDCOffline PowerShell Script
+
+
+$add1 = 'https://github.com/DellProSupportGse/PrivateCloud.DiagnosticInfo/archive/master.zip'
+$add2 = 'https://raw.githubusercontent.com/DellProSupportGse/Tools/main/SDDCOffline.ps1'
+$dlpath1 = 'c:\SDDC\SDDC.zip'
+$dlpath2 = 'c:\SDDC\SDDCOffline.ps1'
+md c:\SDDC
+Invoke-WebRequest -uri $add1 -Outfile $dlpath1
+Invoke-WebRequest -uri $add2 -outfile $dlpath2
+c:\SDDC\SDDCOffline.ps1
+
+##########################################################################
+###########    Run CluChk Collection from PowerShell   ###################
+##########################################################################
+
+Echo ToolBox;[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12;Invoke-Expression('$module="ToolBox";$repo="PowershellScripts"'+(new-object net.webclient).DownloadString('https://raw.githubusercontent.com/DellProSupportGse/Tools/main/ToolBox.ps1'));Invoke-ToolBox
+
+
+
+##########################################################################
+##############    ASHCI Storage Maintenance Mode   #######################
+##########################################################################
+# Enable/disable Storage Maintenace mode. (If you used DRIFT to install updates and drives in cluster show "In Maintenance")
+
+Get-StorageScaleUnit -FriendlyName "Server1" | Enable-StorageMaintenanceMode
+Get-StorageScaleUnit -FriendlyName "Server1" | Disable-StorageMaintenanceMode
