@@ -1,9 +1,8 @@
 # Azure Local Config Script
-Change the following lines to match your deployment
-InterfaceAlias "Integrated NIC 1 Port 1-1" 
-VlanID in "Get-NetAdapter -Name "Integrated NIC 1 Port 1-1" | Set-NetAdapter -VlanID 3220 -Confirm:$false"
-
-HostName in Line "Rename-Computer -NewName HostName -Restart" 
+** Change the following lines to match your deployment **
+- InterfaceAlias "Integrated NIC 1 Port 1-1" 
+- VlanID in "Get-NetAdapter -Name "Integrated NIC 1 Port 1-1" | Set-NetAdapter -VlanID 3220 -Confirm:$false"
+- HostName in Line "Rename-Computer -NewName HostName -Restart" 
 
 ```
 Get-NetAdapter | ? InterfaceDescription -inotmatch "NDIS" | Set-NetIPInterface -Dhcp Disabled
@@ -28,7 +27,7 @@ netsh advfirewall firewall add rule name="ICMP Allow incoming V4 echo request" p
 Rename-Computer -NewName HostName -Restart
 ```
 
-#Get Dell Golden Image BuildInfo
+# Display Dell Golden Image BuildInfo
 
 ```
 Get-ItemPropertyValue -Path "HKLM:\Software\Dell\AX\GoldenImage\BuildInfo" -Name "ImageFileName"
