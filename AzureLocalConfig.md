@@ -1,9 +1,10 @@
 # Azure Local Config Script
 ### 24H2 using Dell Golden Image
+
 **Change the following lines to match your deployment**
-- InterfaceAlias "Integrated NIC 1 Port 1-1" 
-- VlanID in "Get-NetAdapter -Name "Integrated NIC 1 Port 1-1" | Set-NetAdapter -VlanID 3220 -Confirm:$false"
-- HostName in Line "Rename-Computer -NewName HostName -Restart" 
+- ***Integrated NIC 1 Port 1-1***
+- ***VlanID 3220*** 
+- ***HostName*** 
 
 ```
 Get-NetAdapter | ? InterfaceDescription -inotmatch "NDIS" | Set-NetIPInterface -Dhcp Disabled
