@@ -2,9 +2,13 @@
 ### 24H2 using Dell Golden Image
 
 **Change the following lines to match your deployment**
-- ***Integrated NIC 1 Port 1-1***
-- ***VlanID 3220*** 
-- ***HostName*** 
+- ***Integrated NIC 1 Port 1-1*** to the NIC you are using for Management Intent
+- Ensure you set all NICs of the Management Intent to the same VLAN
+- ***VlanID 3220*** to the VLAN ID for your deployment
+- ***HostName*** to the hostname of the server
+- ***10.10.10.101*** to the IP address of your server
+- ***10.10.10.1*** to the Gateway IP address
+- ***1.1.1.1,1.1.2.2*** to the DNS Server IPs
 
 ```
 Get-NetAdapter | ? InterfaceDescription -inotmatch "NDIS" | Set-NetIPInterface -Dhcp Disabled
@@ -12,7 +16,7 @@ Get-NetAdapter | Where-Object {$_.status -eq "disconnected"} | Disable-NetAdapte
 
 New-NetIPAddress -InterfaceAlias "Integrated NIC 1 Port 1-1" -IPAddress 10.10.10.101 -DefaultGateway 10.10.10.1 -PrefixLength 24 -AddressFamily IPv4 -Verbose
 
-Get-NetAdapter -Name "Integrated NIC 1 Port 1-1" | Set-NetAdapter -VlanID 3220 -Confirm:$false
+Get-NetAdapter -Name "Integrated NIC 1 Port 1-1","Integrated NIC 1 Port 2-1" | Set-NetAdapter -VlanID 3220 -Confirm:$false
 
 Set-DnsClientServerAddress -InterfaceAlias "Integrated NIC 1 Port 1-1" -ServerAddresses 1.1.1.1,1.1.2.2
 
