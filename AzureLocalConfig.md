@@ -1,5 +1,5 @@
 # Azure Local Config Script
-## 24H2 using Dell Golden Image
+### 24H2 using Dell Golden Image
 **Change the following lines to match your deployment**
 - InterfaceAlias "Integrated NIC 1 Port 1-1" 
 - VlanID in "Get-NetAdapter -Name "Integrated NIC 1 Port 1-1" | Set-NetAdapter -VlanID 3220 -Confirm:$false"
@@ -32,7 +32,7 @@ Rename-Computer -NewName HostName -Restart
 ```
 
 # Azure Registration/Onboarding
-## This will download and apply MS updates and begin the Arc Registration. Server may reboot after updates are applied. If this happens just rerun the script and it will pick up where it left off. 
+### This will Install MS updates and begin the Arc Registration. Server may reboot after updates are applied. If this happens just rerun the script and it will pick up where it left off. 
 
 ```
 $Subscription = "SubcriptionID"
