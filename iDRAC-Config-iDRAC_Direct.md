@@ -1,6 +1,6 @@
 # Basic Script to configure iDRAC from front USB Port of server. 
-## Must have iDRAC RAC Tools installed. Update iDRAC Variables before running. 
-- Modify the variables before running
+### Must have iDRAC RAC Tools installed. 
+### Update iDRAC Variables before running. 
 ```
 $u='root'
 $p='calvin'
