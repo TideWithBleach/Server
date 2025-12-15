@@ -1,6 +1,7 @@
-#Must have iDRAC RAC Tools installed. Update iDRAC Variables before running. 
-
-#iDRAC Variables
+# Basic Script to configure iDRAC from front USB Port of server. 
+## Must have iDRAC RAC Tools installed. Update iDRAC Variables before running. 
+- Modify the variables before running
+```
 $u='root'
 $p='calvin'
 $ip='169.254.0.3'
@@ -13,9 +14,6 @@ $idracdns2='172.16.15.41'
 $idracntp1='10.110.30.156'
 $idracntp2='10.110.93.223'
 $timezone='EST5EDT'
-#iDRAC Variables
-
-start-transcript -path $hostname"-iDRAC_Config"
 
 racadm --nocertwarn -r $ip -u $u -p $p set idrac.Tuning.DefaultCredentialWarning 0
 racadm --nocertwarn -r $ip -u $u -p $p set idrac.ipv4.dhcpenable 0
@@ -33,4 +31,4 @@ racadm --nocertwarn -r $ip -u $u -p $p set idrac.ntpconfiggroup.ntp1 $idracntp2
 racadm --nocertwarn -r $ip -u $u -p $p set idrac.ntpconfiggroup.ntpenable 1
 racadm --nocertwarn -r $ip -u $u -p $p get idrac.ipv4
 
-stop-transcript
+```
