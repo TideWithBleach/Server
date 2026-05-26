@@ -27,7 +27,7 @@ racadm --nocertwarn -r $ip -u $u -p $p set idrac.ipv4.DNS1 $idracdns1
 racadm --nocertwarn -r $ip -u $u -p $p set idrac.ipv4.DNS2 $idracdns2
 racadm --nocertwarn -r $ip -u $u -p $p set idrac.time.timezone $timezone
 racadm --nocertwarn -r $ip -u $u -p $p set idrac.ntpconfiggroup.ntp1 $idracntp1
-racadm --nocertwarn -r $ip -u $u -p $p set idrac.ntpconfiggroup.ntp1 $idracntp2
+racadm --nocertwarn -r $ip -u $u -p $p set idrac.ntpconfiggroup.ntp2 $idracntp2
 racadm --nocertwarn -r $ip -u $u -p $p set idrac.ntpconfiggroup.ntpenable 1
 racadm --nocertwarn -r $ip -u $u -p $p get idrac.ipv4
 

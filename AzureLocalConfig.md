@@ -40,7 +40,7 @@ Rename-Computer -NewName HostName -Restart
 ### This will Install MS updates and begin the Arc Registration. Server may reboot after updates are applied. If this happens just rerun the script and it will pick up where it left off. 
 
 ```
-$Subscription = "SubcriptionID"
+$Subscription = "SubscriptionID"
 $RG = "ResourceGroup"
 $Region = "eastus"
 
